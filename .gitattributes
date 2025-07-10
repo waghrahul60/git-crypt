@@ -1,0 +1,5 @@
+*.key filter=git-crypt diff=git-crypt
+*.secret filter=git-crypt diff=git-crypt
+config/secrets/* filter=git-crypt diff=git-crypt
+
+__*.yaml* filter=git-crypt diff=git-crypt linguistics=git-crypt 
