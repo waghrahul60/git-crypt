@@ -190,6 +190,13 @@ readarray -t ALL_FILES < <(get_files_to_check "$@")
 
 echo -e "${BLUE}🔍 Found ${#ALL_FILES[@]} YAML files to evaluate${NC}"
 
+is_encrypted_git_crypt() {
+    local file="$1"
+    git-crypt status | grep -Fq "not encrypted: $file" && return 1
+    git-crypt status | grep -Fq "$file" && return 0
+    return 1
+}
+
 # Process each file
 for file in "${ALL_FILES[@]}"; do
     # Skip if file doesn't exist or isn't readable
