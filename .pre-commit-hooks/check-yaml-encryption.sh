@@ -141,13 +141,48 @@ check_encryption() {
     echo "$IS_ENCRYPTED"
 }
 
-# Process each file passed by pre-commit
-for file in "$@"; do
-    # Only process YAML files
-    if [[ ! "$file" =~ \.(yaml|yml)$ ]]; then
-        continue
+# Function to get all files that should be checked
+get_files_to_check() {
+    local files_to_check=()
+    
+    # If files are passed as arguments, use those
+    if [ $# -gt 0 ]; then
+        files_to_check=("$@")
+    else
+        # Otherwise, find all YAML files in the repository
+        echo -e "${BLUE}📁 No files specified, scanning repository for YAML files...${NC}"
+        while IFS= read -r -d '' file; do
+            files_to_check+=("$file")
+        done < <(find . -name "*.yaml" -o -name "*.yml" -type f -print0 2>/dev/null)
     fi
     
+    # Also check git staged files (for pre-commit scenarios)
+    if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+        while IFS= read -r file; do
+            if [[ "$file" =~ \.(yaml|yml)$ ]] && [[ ! " ${files_to_check[@]} " =~ " $file " ]]; then
+                files_to_check+=("$file")
+            fi
+        done < <(git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+        
+        # Also check modified files that aren't staged
+        while IFS= read -r file; do
+            if [[ "$file" =~ \.(yaml|yml)$ ]] && [[ ! " ${files_to_check[@]} " =~ " $file " ]]; then
+                files_to_check+=("$file")
+            fi
+        done < <(git diff --name-only --diff-filter=ACM 2>/dev/null || true)
+    fi
+    
+    printf '%s\n' "${files_to_check[@]}"
+}
+
+# Get all files that need to be checked
+readarray -t ALL_FILES < <(get_files_to_check "$@")
+
+echo -e "${BLUE}🔍 Found ${#ALL_FILES[@]} YAML files to evaluate${NC}"
+
+# Process each file
+for file in "${ALL_FILES[@]}"; do
+    # Skip if file doesn't exist or isn't readable
     if [ ! -f "$file" ] || [ ! -r "$file" ]; then
         echo -e "${YELLOW}⚠️  Skipping unreadable file: $file${NC}"
         continue
