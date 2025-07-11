@@ -1,6 +1,6 @@
 #!/bin/bash
 # .pre-commit-hooks/check-yaml-encryption.sh
-# Pre-commit hook to check YAML encryption in secret folder
+# Pre-commit hook to check YAML encryption based on .gitattributes
 
 set -e
 
@@ -17,22 +17,59 @@ UNENCRYPTED_COUNT=0
 TOTAL_FILES=0
 UNENCRYPTED_FILES=()
 
-echo -e "${BLUE}🔍 Checking YAML encryption in secret folder...${NC}"
+echo -e "${BLUE}🔍 Checking YAML encryption based on .gitattributes...${NC}"
 
-# Process each file passed by pre-commit
-for file in "$@"; do
-    # Only process files in secret folder
-    if [[ ! "$file" =~ ^secret/.*\.(yaml|yml)$ ]]; then
-        continue
+# Function to check if a file should be encrypted based on .gitattributes
+should_be_encrypted() {
+    local file="$1"
+    local gitattributes_file=".gitattributes"
+    
+    # Check if .gitattributes exists
+    if [ ! -f "$gitattributes_file" ]; then
+        echo -e "${YELLOW}⚠️  .gitattributes file not found${NC}"
+        return 1
     fi
     
-    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
-        echo -e "${YELLOW}⚠️  Skipping unreadable file: $file${NC}"
-        continue
-    fi
+    # Parse .gitattributes to find encryption rules
+    # Look for patterns like: *.yaml filter=encryption, secret/** filter=git-crypt, etc.
+    while IFS= read -r line || [ -n "$line" ]; do
+        # Skip empty lines and comments
+        [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+        
+        # Extract pattern and attributes
+        if [[ "$line" =~ ^([^[:space:]]+)[[:space:]]+(.+)$ ]]; then
+            pattern="${BASH_REMATCH[1]}"
+            attributes="${BASH_REMATCH[2]}"
+            
+            # Check if this line indicates encryption
+            if [[ "$attributes" =~ (filter=|git-crypt|sops|ansible-vault|encrypt) ]]; then
+                # Convert gitattributes pattern to shell pattern
+                shell_pattern=$(echo "$pattern" | sed 's/\*\*/\*/g')
+                
+                # Check if the file matches this pattern
+                if [[ "$file" == $shell_pattern ]]; then
+                    echo "   📋 Matched .gitattributes pattern: $pattern -> $attributes"
+                    return 0
+                fi
+                
+                # Handle directory patterns
+                if [[ "$pattern" =~ /\*\*$ ]]; then
+                    dir_pattern="${pattern%/**}"
+                    if [[ "$file" == "$dir_pattern"/* ]]; then
+                        echo "   📋 Matched .gitattributes directory pattern: $pattern -> $attributes"
+                        return 0
+                    fi
+                fi
+            fi
+        fi
+    done < "$gitattributes_file"
     
-    TOTAL_FILES=$((TOTAL_FILES + 1))
-    echo -e "\n${BLUE}📄 Checking: $file${NC}"
+    return 1
+}
+
+# Function to check if file is encrypted
+check_encryption() {
+    local file="$1"
     
     # Get file type using file command
     FILE_TYPE=$(file -b "$file" 2>/dev/null || echo "unknown")
@@ -73,6 +110,9 @@ for file in "$@"; do
         elif grep -q "ENC\[" "$file" 2>/dev/null; then
             echo -e "   ${GREEN}✅ ENC[] encryption marker detected${NC}"
             IS_ENCRYPTED=true
+        elif head -c 10 "$file" 2>/dev/null | grep -q "^.GITCRYPT" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ Git-crypt encryption detected${NC}"
+            IS_ENCRYPTED=true
         fi
     fi
     
@@ -98,14 +138,41 @@ for file in "$@"; do
         fi
     fi
     
-    # Final determination
-    if [ "$IS_ENCRYPTED" = true ]; then
-        echo -e "${GREEN}✅ RESULT: $file is ENCRYPTED${NC}"
-        ENCRYPTED_COUNT=$((ENCRYPTED_COUNT + 1))
+    echo "$IS_ENCRYPTED"
+}
+
+# Process each file passed by pre-commit
+for file in "$@"; do
+    # Only process YAML files
+    if [[ ! "$file" =~ \.(yaml|yml)$ ]]; then
+        continue
+    fi
+    
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+        echo -e "${YELLOW}⚠️  Skipping unreadable file: $file${NC}"
+        continue
+    fi
+    
+    echo -e "\n${BLUE}📄 Checking: $file${NC}"
+    
+    # Check if this file should be encrypted according to .gitattributes
+    if should_be_encrypted "$file"; then
+        TOTAL_FILES=$((TOTAL_FILES + 1))
+        
+        # Check if file is actually encrypted
+        IS_ENCRYPTED=$(check_encryption "$file")
+        
+        # Final determination
+        if [ "$IS_ENCRYPTED" = true ]; then
+            echo -e "${GREEN}✅ RESULT: $file is ENCRYPTED${NC}"
+            ENCRYPTED_COUNT=$((ENCRYPTED_COUNT + 1))
+        else
+            echo -e "${RED}❌ RESULT: $file is NOT ENCRYPTED${NC}"
+            UNENCRYPTED_COUNT=$((UNENCRYPTED_COUNT + 1))
+            UNENCRYPTED_FILES+=("$file")
+        fi
     else
-        echo -e "${RED}❌ RESULT: $file is NOT ENCRYPTED${NC}"
-        UNENCRYPTED_COUNT=$((UNENCRYPTED_COUNT + 1))
-        UNENCRYPTED_FILES+=("$file")
+        echo -e "${YELLOW}ℹ️  File not marked for encryption in .gitattributes${NC}"
     fi
 done
 
@@ -117,8 +184,8 @@ echo -e "Unencrypted: ${RED}$UNENCRYPTED_COUNT${NC}"
 
 # Exit with error if unencrypted files found
 if [ $UNENCRYPTED_COUNT -gt 0 ]; then
-    echo -e "\n${RED}❌ COMMIT BLOCKED: Found unencrypted files in secret folder${NC}"
-    echo -e "${YELLOW}The following files need to be encrypted:${NC}"
+    echo -e "\n${RED}❌ COMMIT BLOCKED: Found unencrypted files that should be encrypted${NC}"
+    echo -e "${YELLOW}The following files need to be encrypted according to .gitattributes:${NC}"
     for file in "${UNENCRYPTED_FILES[@]}"; do
         echo -e "  - ${RED}$file${NC}"
     done
@@ -126,14 +193,16 @@ if [ $UNENCRYPTED_COUNT -gt 0 ]; then
     echo "1. Encrypt the files using your preferred method:"
     echo "   - Ansible Vault: ansible-vault encrypt <file>"
     echo "   - SOPS: sops -e <file>"
+    echo "   - Git-crypt: git-crypt add <file>"
     echo "   - GPG: gpg -c <file>"
     echo "2. Commit the encrypted files"
     echo "3. Or use --no-verify to skip this check (NOT RECOMMENDED)"
+    echo "4. Or update .gitattributes if the file shouldn't be encrypted"
     exit 1
 elif [ $TOTAL_FILES -eq 0 ]; then
-    echo -e "${YELLOW}ℹ️  No YAML files in secret folder to check${NC}"
+    echo -e "${YELLOW}ℹ️  No YAML files marked for encryption in .gitattributes${NC}"
     exit 0
 else
-    echo -e "\n${GREEN}✅ All files in secret folder are properly encrypted!${NC}"
+    echo -e "\n${GREEN}✅ All files marked for encryption are properly encrypted!${NC}"
     exit 0
 fi
