@@ -84,9 +84,22 @@ check_encryption() {
         IS_ENCRYPTED=true
     fi
     
+    # Special case: if file type is just "data", it's likely encrypted
+    if [ "$FILE_TYPE" = "data" ]; then
+        echo -e "   ${GREEN}✅ File type 'data' indicates encryption${NC}"
+        IS_ENCRYPTED=true
+    fi
+    
     # Method 2: Check for specific encryption markers
     if [ "$IS_ENCRYPTED" = false ]; then
-        if grep -q "^\$ANSIBLE_VAULT" "$file" 2>/dev/null; then
+        # Check for git-crypt header first (most common for your case)
+        if head -c 10 "$file" 2>/dev/null | grep -q "^.GITCRYPT" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ Git-crypt encryption detected${NC}"
+            IS_ENCRYPTED=true
+        elif head -c 1 "$file" 2>/dev/null | od -An -tx1 | grep -q "00" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ Binary/encrypted content detected (null bytes)${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "^\$ANSIBLE_VAULT" "$file" 2>/dev/null; then
             echo -e "   ${GREEN}✅ Ansible Vault encryption detected${NC}"
             IS_ENCRYPTED=true
         elif grep -q "^ansible-vault" "$file" 2>/dev/null; then
@@ -109,9 +122,6 @@ check_encryption() {
             IS_ENCRYPTED=true
         elif grep -q "ENC\[" "$file" 2>/dev/null; then
             echo -e "   ${GREEN}✅ ENC[] encryption marker detected${NC}"
-            IS_ENCRYPTED=true
-        elif head -c 10 "$file" 2>/dev/null | grep -q "^.GITCRYPT" 2>/dev/null; then
-            echo -e "   ${GREEN}✅ Git-crypt encryption detected${NC}"
             IS_ENCRYPTED=true
         fi
     fi
@@ -226,9 +236,13 @@ if [ $UNENCRYPTED_COUNT -gt 0 ]; then
     done
     echo -e "\n${YELLOW}How to fix:${NC}"
     echo "1. Encrypt the files using your preferred method:"
+    echo "   - Ansible Vault: ansible-vault encrypt <file>"
+    echo "   - SOPS: sops -e <file>"
     echo "   - Git-crypt: git-crypt add <file>"
+    echo "   - GPG: gpg -c <file>"
     echo "2. Commit the encrypted files"
-
+    echo "3. Or use --no-verify to skip this check (NOT RECOMMENDED)"
+    echo "4. Or update .gitattributes if the file shouldn't be encrypted"
     exit 1
 elif [ $TOTAL_FILES -eq 0 ]; then
     echo -e "${YELLOW}ℹ️  No YAML files marked for encryption in .gitattributes${NC}"
