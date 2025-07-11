@@ -226,13 +226,9 @@ if [ $UNENCRYPTED_COUNT -gt 0 ]; then
     done
     echo -e "\n${YELLOW}How to fix:${NC}"
     echo "1. Encrypt the files using your preferred method:"
-    echo "   - Ansible Vault: ansible-vault encrypt <file>"
-    echo "   - SOPS: sops -e <file>"
     echo "   - Git-crypt: git-crypt add <file>"
-    echo "   - GPG: gpg -c <file>"
     echo "2. Commit the encrypted files"
-    echo "3. Or use --no-verify to skip this check (NOT RECOMMENDED)"
-    echo "4. Or update .gitattributes if the file shouldn't be encrypted"
+
     exit 1
 elif [ $TOTAL_FILES -eq 0 ]; then
     echo -e "${YELLOW}ℹ️  No YAML files marked for encryption in .gitattributes${NC}"
