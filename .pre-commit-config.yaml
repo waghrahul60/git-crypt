@@ -1,0 +1,18 @@
+
+# .pre-commit-config.yaml
+# Pre-commit hooks configuration for YAML validation
+
+repos:
+  # Local custom hooks for specific validation
+  - repo: local
+    hooks:
+      # YAML Encryption Check - Only for secret folder
+      - id: yaml-encryption-check
+        name: Check YAML Encryption in Secret Folder
+        description: Ensures all YAML files in secret/ folder are encrypted
+        entry: .pre-commit-hooks/check-yaml-encryption.sh
+        language: script
+        files: ^secret/.*\.(yaml|yml)$
+        pass_filenames: true
+        stages: [commit]
+        verbose: true
