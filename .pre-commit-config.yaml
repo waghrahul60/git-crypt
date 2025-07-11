@@ -8,8 +8,8 @@ repos:
     hooks:
       # YAML Encryption Check - Only for secret folder
       - id: yaml-encryption-check
-        name: Check YAML Encryption in Secret Folder
-        description: Ensures all YAML files in secret/ folder are encrypted
+        name: Check YAML Encryption
+        description: Ensures all YAML files which mach __*.yaml are encrypted
         entry: .pre-commit-hooks/check-yaml-encryption.sh
         language: script
         files: ^secret/.*\.(yaml|yml)$

@@ -3,7 +3,7 @@
 config/secrets/* filter=git-crypt diff=git-crypt
 
 __*.yaml* filter=git-crypt diff=git-crypt linguistics=git-crypt 
-secret/* filter=git-crypt diff=git-crypt
+# secret/* filter=git-crypt diff=git-crypt
 
 
 # Encrypt all files starting with __ and containing .yaml
