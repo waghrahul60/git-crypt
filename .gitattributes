@@ -3,3 +3,4 @@
 config/secrets/* filter=git-crypt diff=git-crypt
 
 __*.yaml* filter=git-crypt diff=git-crypt linguistics=git-crypt 
+secrets/* filter=git-crypt diff=git-crypt
