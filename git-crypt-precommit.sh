@@ -1,8 +1,6 @@
 #!/bin/bash
-
-# Git Crypt Pre-commit Hook
-# This script validates that files marked for encryption in .gitattributes
-# are actually encrypted before commit
+# .pre-commit-hooks/check-yaml-encryption.sh
+# Pre-commit hook to check YAML encryption in secret folder
 
 set -e
 
@@ -10,236 +8,132 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Function to print colored output
-print_error() {
-    echo -e "${RED}ERROR: $1${NC}"
-}
+# Initialize counters
+ENCRYPTED_COUNT=0
+UNENCRYPTED_COUNT=0
+TOTAL_FILES=0
+UNENCRYPTED_FILES=()
 
-print_success() {
-    echo -e "${GREEN}SUCCESS: $1${NC}"
-}
+echo -e "${BLUE}🔍 Checking YAML encryption in secret folder...${NC}"
 
-print_warning() {
-    echo -e "${YELLOW}WARNING: $1${NC}"
-}
-
-# Function to check if a file is encrypted
-# Returns 0 if encrypted (file type is 'data'), 1 if not encrypted
-is_file_encrypted() {
-    local file_path="$1"
-    
-    # Check if file exists
-    if [[ ! -f "$file_path" ]]; then
-        return 1
+# Process each file passed by pre-commit
+for file in "$@"; do
+    # Only process files in secret folder
+    if [[ ! "$file" =~ ^secret/.*\.(yaml|yml)$ ]]; then
+        continue
     fi
     
-    # Get file type using the 'file' command
-    local file_type=$(file -b "$file_path" 2>/dev/null)
-    
-    # Check if file type contains 'data' (indicating binary/encrypted content)
-    if [[ "$file_type" == *"data"* ]]; then
-        return 0  # File is encrypted
-    else
-        return 1  # File is not encrypted (likely ASCII/text)
-    fi
-}
-
-# Function to get files that should be encrypted according to .gitattributes
-get_encrypted_files_pattern() {
-    local gitattributes_file=".gitattributes"
-    
-    if [[ ! -f "$gitattributes_file" ]]; then
-        print_warning "No .gitattributes file found"
-        return 1
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+        echo -e "${YELLOW}⚠️  Skipping unreadable file: $file${NC}"
+        continue
     fi
     
-    # Extract file patterns that have filter=git-crypt or crypt attributes
-    grep -E "(filter=git-crypt|git-crypt)" "$gitattributes_file" 2>/dev/null | \
-    grep -v "^#" | \
-    awk '{print $1}' | \
-    grep -v "^$"
-}
-
-# Function to check if a file matches any of the encrypted patterns
-should_be_encrypted() {
-    local file_path="$1"
-    local patterns="$2"
-    local debug_mode="${DEBUG:-false}"
+    TOTAL_FILES=$((TOTAL_FILES + 1))
+    echo -e "\n${BLUE}📄 Checking: $file${NC}"
     
-    while IFS= read -r pattern; do
-        # Remove leading/trailing whitespace
-        pattern=$(echo "$pattern" | xargs)
-        
-        # Skip empty patterns
-        [[ -z "$pattern" ]] && continue
-        
-        if [[ "$debug_mode" == "true" ]]; then
-            echo "  Checking pattern '$pattern' against file '$file_path'" >&2
+    # Get file type using file command
+    FILE_TYPE=$(file -b "$file" 2>/dev/null || echo "unknown")
+    echo "   File type: $FILE_TYPE"
+    
+    # Check if file is encrypted using multiple methods
+    IS_ENCRYPTED=false
+    
+    # Method 1: Check file type for binary/encrypted indicators
+    if echo "$FILE_TYPE" | grep -qi "data\|encrypted\|binary\|gzip\|compressed"; then
+        echo -e "   ${GREEN}✅ Detected as encrypted by file type: $FILE_TYPE${NC}"
+        IS_ENCRYPTED=true
+    fi
+    
+    # Method 2: Check for specific encryption markers
+    if [ "$IS_ENCRYPTED" = false ]; then
+        if grep -q "^\$ANSIBLE_VAULT" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ Ansible Vault encryption detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "^ansible-vault" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ Ansible Vault encryption detected (alternative format)${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "sops:" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ SOPS encryption detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "age:" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ AGE encryption detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "pgp:" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ PGP encryption detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "BEGIN PGP MESSAGE\|BEGIN ENCRYPTED MESSAGE" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ PGP/Encrypted message format detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "-----BEGIN PGP MESSAGE-----" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ PGP message block detected${NC}"
+            IS_ENCRYPTED=true
+        elif grep -q "ENC\[" "$file" 2>/dev/null; then
+            echo -e "   ${GREEN}✅ ENC[] encryption marker detected${NC}"
+            IS_ENCRYPTED=true
         fi
-        
-        # Extract just the filename for patterns that don't contain '/'
-        local filename=$(basename "$file_path")
-        
-        # Handle different pattern types
-        if [[ "$pattern" == *"/"* ]]; then
-            # Pattern contains path - match against full path
-            if [[ "$file_path" == $pattern ]]; then
-                [[ "$debug_mode" == "true" ]] && echo "    -> MATCH (exact path)" >&2
-                return 0
-            fi
-        else
-            # Pattern doesn't contain path - match against filename only
-            # Use bash's built-in pattern matching for glob patterns
-            if [[ "$filename" == $pattern ]]; then
-                [[ "$debug_mode" == "true" ]] && echo "    -> MATCH (filename glob)" >&2
-                return 0
-            fi
-        fi
-        
-        [[ "$debug_mode" == "true" ]] && echo "    -> No match" >&2
-        
-    done <<< "$patterns"
-    
-    return 1
-}
-
-# Main validation function
-validate_encryption() {
-    local exit_code=0
-    local checked_files=0
-    local encrypted_files=0
-    local unencrypted_files=0
-    local debug_mode="${DEBUG:-false}"
-    
-    # Get patterns from .gitattributes
-    local patterns=$(get_encrypted_files_pattern)
-    
-    if [[ -z "$patterns" ]]; then
-        print_warning "No git-crypt patterns found in .gitattributes"
-        return 0
     fi
     
-    echo "Checking file encryption status..."
-    echo "Patterns from .gitattributes:"
-    echo "$patterns"
-    echo ""
-    
-    # Get staged files for commit
-    local staged_files=$(git diff --cached --name-only --diff-filter=ACM)
-    
-    if [[ -z "$staged_files" ]]; then
-        print_warning "No staged files found"
-        return 0
-    fi
-    
-    echo "Staged files:"
-    echo "$staged_files"
-    echo ""
-    
-    # Check each staged file
-    while IFS= read -r file; do
-        # Skip if file doesn't exist (might be deleted)
-        [[ ! -f "$file" ]] && continue
-        
-        echo "Processing file: $file"
-        
-        # Check if this file should be encrypted
-        if should_be_encrypted "$file" "$patterns"; then
-            ((checked_files++))
+    # Method 3: Check if file contains mostly non-printable characters (likely encrypted)
+    if [ "$IS_ENCRYPTED" = false ]; then
+        # Sample first 1000 characters and check if they're mostly printable
+        SAMPLE=$(head -c 1000 "$file" 2>/dev/null || true)
+        if [ -n "$SAMPLE" ]; then
+            # Count printable vs non-printable characters
+            PRINTABLE_COUNT=$(echo -n "$SAMPLE" | tr -cd '[:print:][:space:]' | wc -c)
+            TOTAL_COUNT=$(echo -n "$SAMPLE" | wc -c)
             
-            if is_file_encrypted "$file"; then
-                print_success "File '$file' is properly encrypted"
-                ((encrypted_files++))
-            else
-                print_error "File '$file' should be encrypted but appears to be plain text"
-                echo "  File type: $(file -b "$file")"
-                ((unencrypted_files++))
-                exit_code=1
+            if [ "$TOTAL_COUNT" -gt 0 ]; then
+                PRINTABLE_RATIO=$((PRINTABLE_COUNT * 100 / TOTAL_COUNT))
+                echo "   Printable character ratio: ${PRINTABLE_RATIO}%"
+                
+                # If less than 80% of characters are printable, likely encrypted
+                if [ "$PRINTABLE_RATIO" -lt 80 ]; then
+                    echo -e "   ${GREEN}✅ Detected as encrypted (low printable character ratio)${NC}"
+                    IS_ENCRYPTED=true
+                fi
             fi
-        else
-            echo "  File '$file' does not match any encryption patterns"
         fi
-    done <<< "$staged_files"
-    
-    echo ""
-    echo "Encryption check summary:"
-    echo "  Files checked: $checked_files"
-    echo "  Properly encrypted: $encrypted_files"
-    echo "  Unencrypted (violations): $unencrypted_files"
-    
-    if [[ $exit_code -eq 0 ]]; then
-        if [[ $checked_files -eq 0 ]]; then
-            echo "No files requiring encryption found in this commit."
-        else
-            print_success "All files requiring encryption are properly encrypted!"
-        fi
-    else
-        echo ""
-        print_error "Commit blocked: Some files that should be encrypted are not encrypted."
-        echo "Please run 'git crypt lock' and 'git crypt unlock' to ensure proper encryption."
-        echo "Or check your .gitattributes configuration."
     fi
     
-    return $exit_code
-}
+    # Final determination
+    if [ "$IS_ENCRYPTED" = true ]; then
+        echo -e "${GREEN}✅ RESULT: $file is ENCRYPTED${NC}"
+        ENCRYPTED_COUNT=$((ENCRYPTED_COUNT + 1))
+    else
+        echo -e "${RED}❌ RESULT: $file is NOT ENCRYPTED${NC}"
+        UNENCRYPTED_COUNT=$((UNENCRYPTED_COUNT + 1))
+        UNENCRYPTED_FILES+=("$file")
+    fi
+done
 
-# Function to install this script as a pre-commit hook
-install_hook() {
-    local hook_path=".git/hooks/pre-commit"
-    local script_path="$(realpath "$0")"
-    
-    # Create hooks directory if it doesn't exist
-    mkdir -p ".git/hooks"
-    
-    # Create the pre-commit hook
-    cat > "$hook_path" << EOF
-#!/bin/bash
-# Git Crypt Pre-commit Hook
-# Auto-generated hook that calls the validation script
+# Print summary
+echo -e "\n${BLUE}=== YAML Encryption Check Results ===${NC}"
+echo "Files processed: $TOTAL_FILES"
+echo -e "Encrypted: ${GREEN}$ENCRYPTED_COUNT${NC}"
+echo -e "Unencrypted: ${RED}$UNENCRYPTED_COUNT${NC}"
 
-# Call the validation script
-"$script_path" validate
-
-# Exit with the same code as the validation script
-exit \$?
-EOF
-    
-    # Make the hook executable
-    chmod +x "$hook_path"
-    
-    print_success "Pre-commit hook installed successfully at $hook_path"
-}
-
-# Main script logic
-case "${1:-validate}" in
-    "validate")
-        validate_encryption
-        ;;
-    "debug")
-        DEBUG=true validate_encryption
-        ;;
-    "install")
-        install_hook
-        ;;
-    "help"|"-h"|"--help")
-        echo "Git Crypt Pre-commit Hook Script"
-        echo ""
-        echo "Usage: $0 [command]"
-        echo ""
-        echo "Commands:"
-        echo "  validate    Validate encryption status of staged files (default)"
-        echo "  debug       Run validation with debug output"
-        echo "  install     Install this script as a pre-commit hook"
-        echo "  help        Show this help message"
-        echo ""
-        echo "This script checks if files marked for encryption in .gitattributes"
-        echo "are actually encrypted before allowing a commit."
-        ;;
-    *)
-        print_error "Unknown command: $1"
-        echo "Use '$0 help' for usage information"
-        exit 1
-        ;;
-esac
+# Exit with error if unencrypted files found
+if [ $UNENCRYPTED_COUNT -gt 0 ]; then
+    echo -e "\n${RED}❌ COMMIT BLOCKED: Found unencrypted files in secret folder${NC}"
+    echo -e "${YELLOW}The following files need to be encrypted:${NC}"
+    for file in "${UNENCRYPTED_FILES[@]}"; do
+        echo -e "  - ${RED}$file${NC}"
+    done
+    echo -e "\n${YELLOW}How to fix:${NC}"
+    echo "1. Encrypt the files using your preferred method:"
+    echo "   - Ansible Vault: ansible-vault encrypt <file>"
+    echo "   - SOPS: sops -e <file>"
+    echo "   - GPG: gpg -c <file>"
+    echo "2. Commit the encrypted files"
+    echo "3. Or use --no-verify to skip this check (NOT RECOMMENDED)"
+    exit 1
+elif [ $TOTAL_FILES -eq 0 ]; then
+    echo -e "${YELLOW}ℹ️  No YAML files in secret folder to check${NC}"
+    exit 0
+else
+    echo -e "\n${GREEN}✅ All files in secret folder are properly encrypted!${NC}"
+    exit 0
+fi
