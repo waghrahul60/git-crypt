@@ -66,6 +66,7 @@ get_encrypted_files_pattern() {
 should_be_encrypted() {
     local file_path="$1"
     local patterns="$2"
+    local debug_mode="${DEBUG:-false}"
     
     while IFS= read -r pattern; do
         # Remove leading/trailing whitespace
@@ -74,25 +75,30 @@ should_be_encrypted() {
         # Skip empty patterns
         [[ -z "$pattern" ]] && continue
         
-        # Convert gitattributes pattern to shell pattern
-        # Handle simple glob patterns
-        if [[ "$file_path" == $pattern ]]; then
-            return 0
+        if [[ "$debug_mode" == "true" ]]; then
+            echo "  Checking pattern '$pattern' against file '$file_path'" >&2
         fi
         
-        # Handle directory patterns
+        # Extract just the filename for patterns that don't contain '/'
+        local filename=$(basename "$file_path")
+        
+        # Handle different pattern types
         if [[ "$pattern" == *"/"* ]]; then
+            # Pattern contains path - match against full path
             if [[ "$file_path" == $pattern ]]; then
+                [[ "$debug_mode" == "true" ]] && echo "    -> MATCH (exact path)" >&2
+                return 0
+            fi
+        else
+            # Pattern doesn't contain path - match against filename only
+            # Use bash's built-in pattern matching for glob patterns
+            if [[ "$filename" == $pattern ]]; then
+                [[ "$debug_mode" == "true" ]] && echo "    -> MATCH (filename glob)" >&2
                 return 0
             fi
         fi
         
-        # Handle wildcard patterns
-        if [[ "$pattern" == *"*"* ]]; then
-            if [[ "$file_path" == $pattern ]]; then
-                return 0
-            fi
-        fi
+        [[ "$debug_mode" == "true" ]] && echo "    -> No match" >&2
         
     done <<< "$patterns"
     
@@ -105,6 +111,7 @@ validate_encryption() {
     local checked_files=0
     local encrypted_files=0
     local unencrypted_files=0
+    local debug_mode="${DEBUG:-false}"
     
     # Get patterns from .gitattributes
     local patterns=$(get_encrypted_files_pattern)
@@ -127,10 +134,16 @@ validate_encryption() {
         return 0
     fi
     
+    echo "Staged files:"
+    echo "$staged_files"
+    echo ""
+    
     # Check each staged file
     while IFS= read -r file; do
         # Skip if file doesn't exist (might be deleted)
         [[ ! -f "$file" ]] && continue
+        
+        echo "Processing file: $file"
         
         # Check if this file should be encrypted
         if should_be_encrypted "$file" "$patterns"; then
@@ -145,6 +158,8 @@ validate_encryption() {
                 ((unencrypted_files++))
                 exit_code=1
             fi
+        else
+            echo "  File '$file' does not match any encryption patterns"
         fi
     done <<< "$staged_files"
     
@@ -202,6 +217,9 @@ case "${1:-validate}" in
     "validate")
         validate_encryption
         ;;
+    "debug")
+        DEBUG=true validate_encryption
+        ;;
     "install")
         install_hook
         ;;
@@ -212,6 +230,7 @@ case "${1:-validate}" in
         echo ""
         echo "Commands:"
         echo "  validate    Validate encryption status of staged files (default)"
+        echo "  debug       Run validation with debug output"
         echo "  install     Install this script as a pre-commit hook"
         echo "  help        Show this help message"
         echo ""
